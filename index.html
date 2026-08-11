@@ -24,47 +24,64 @@
 
         #viewer {
             width: 100%;
-            height: 100%;
-            overflow: auto;
+            height: 100dvh;
 
             display: flex;
             justify-content: center;
-            align-items: flex-start;
+            align-items: center;
+
+            overflow: auto;
 
             padding: 10px;
         }
 
         #page-container {
             position: relative;
-            margin: auto;
+
             background: white;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+            box-shadow:
+                0 2px 12px rgba(0, 0, 0, 0.35);
+
+            flex-shrink: 0;
         }
 
         #pdf-canvas {
             display: block;
+
+            width: 100%;
+            height: 100%;
         }
 
-        /* PDF link / annotation layer */
+        /*
+         * PDF links
+         */
         #annotation-layer {
             position: absolute;
+
             top: 0;
             left: 0;
+
+            width: 100%;
+            height: 100%;
+
             pointer-events: none;
         }
 
         #annotation-layer a {
             position: absolute;
+
             display: block;
 
             pointer-events: auto;
 
             cursor: pointer;
+
             text-decoration: none;
         }
 
         #annotation-layer a:hover {
-            background: rgba(0, 120, 255, 0.12);
+            background: rgba(0, 120, 255, 0.10);
         }
     </style>
 </head>
@@ -91,7 +108,7 @@
 
     /*
      * ==========================================
-     * PUT YOUR PDF PATH HERE
+     * YOUR PDF
      * ==========================================
      */
 
@@ -102,318 +119,418 @@
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 
-    const viewer = document.getElementById("viewer");
-    const container = document.getElementById("page-container");
-    const canvas = document.getElementById("pdf-canvas");
+    const viewer =
+        document.getElementById("viewer");
+
+    const container =
+        document.getElementById("page-container");
+
+    const canvas =
+        document.getElementById("pdf-canvas");
+
+    const ctx =
+        canvas.getContext("2d", {
+            alpha: false
+        });
+
     const annotationLayer =
         document.getElementById("annotation-layer");
 
-    const ctx = canvas.getContext("2d");
+
+    let pdfDocument = null;
 
 
-    async function renderPDF() {
+    /*
+     * ==========================================
+     * LOAD PDF ONCE
+     * ==========================================
+     */
 
-        try {
+    async function loadPDF() {
 
-            const pdf = await pdfjsLib
+        pdfDocument =
+            await pdfjsLib
                 .getDocument(PDF_PATH)
                 .promise;
 
+        renderPage();
+    }
+
+
+    /*
+     * ==========================================
+     * RENDER PAGE
+     * ==========================================
+     */
+
+    async function renderPage() {
+
+        if (!pdfDocument)
+            return;
+
+
+        const page =
+            await pdfDocument.getPage(1);
+
+
+        /*
+         * Original PDF dimensions
+         */
+
+        const baseViewport =
+            page.getViewport({
+                scale: 1
+            });
+
+
+        /*
+         * Available screen size
+         */
+
+        const availableWidth =
+            viewer.clientWidth - 20;
+
+        const availableHeight =
+            viewer.clientHeight - 20;
+
+
+        /*
+         * Calculate scale required
+         * to fit width.
+         */
+
+        const widthScale =
+            availableWidth /
+            baseViewport.width;
+
+
+        /*
+         * Calculate scale required
+         * to fit height.
+         */
+
+        const heightScale =
+            availableHeight /
+            baseViewport.height;
+
+
+        /*
+         * IMPORTANT
+         *
+         * This determines the DISPLAY size.
+         *
+         * The smaller scale ensures that
+         * the entire page fits.
+         */
+
+        const displayScale =
+            Math.min(
+                widthScale,
+                heightScale
+            );
+
+
+        /*
+         * ==========================================
+         * HIGH DPI RENDERING
+         * ==========================================
+         *
+         * devicePixelRatio:
+         *
+         * Normal monitor  -> 1
+         * Retina          -> 2
+         * High DPI        -> 2 / 3
+         * 4K display      -> potentially 2+
+         *
+         */
+
+        const devicePixelRatio =
+            Math.min(
+                window.devicePixelRatio || 1,
+                3
+            );
+
+
+        /*
+         * PDF viewport used for DISPLAY
+         */
+
+        const displayViewport =
+            page.getViewport({
+                scale: displayScale
+            });
+
+
+        /*
+         * PDF viewport used for RENDERING
+         *
+         * We render at a much higher resolution
+         * than the actual display size.
+         */
+
+        const renderViewport =
+            page.getViewport({
+                scale:
+                    displayScale *
+                    devicePixelRatio
+            });
+
+
+        /*
+         * ==========================================
+         * CONTAINER SIZE
+         * ==========================================
+         */
+
+        container.style.width =
+            displayViewport.width + "px";
+
+        container.style.height =
+            displayViewport.height + "px";
+
+
+        /*
+         * ==========================================
+         * CANVAS RESOLUTION
+         * ==========================================
+         *
+         * Physical pixels are higher than
+         * CSS pixels.
+         */
+
+        canvas.width =
+            Math.ceil(
+                renderViewport.width
+            );
+
+        canvas.height =
+            Math.ceil(
+                renderViewport.height
+            );
+
+
+        /*
+         * CSS display size remains normal.
+         */
+
+        canvas.style.width =
+            displayViewport.width + "px";
+
+        canvas.style.height =
+            displayViewport.height + "px";
+
+
+        /*
+         * Clear previous rendering
+         */
+
+        ctx.clearRect(
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
+
+
+        /*
+         * ==========================================
+         * RENDER HIGH QUALITY PDF
+         * ==========================================
+         */
+
+        await page.render({
+
+            canvasContext: ctx,
+
+            viewport: renderViewport
+
+        }).promise;
+
+
+        /*
+         * ==========================================
+         * RENDER PDF LINKS
+         * ==========================================
+         */
+
+        await renderAnnotations(
+            page,
+            displayViewport
+        );
+    }
+
+
+    /*
+     * ==========================================
+     * PDF LINK ANNOTATIONS
+     * ==========================================
+     */
+
+    async function renderAnnotations(
+        page,
+        viewport
+    ) {
+
+        const annotations =
+            await page.getAnnotations();
+
+
+        annotationLayer.innerHTML = "";
+
+
+        for (
+            const annotation
+            of annotations
+        ) {
+
+            if (
+                annotation.subtype !==
+                "Link"
+            ) {
+                continue;
+            }
+
 
             /*
-             * Currently displaying page 1.
-             *
-             * Change this later if you want
-             * all pages.
+             * PDF coordinates → screen coordinates
              */
 
-            const page = await pdf.getPage(1);
+            const rect =
+                annotation.rect;
 
 
-            /*
-             * Get original PDF dimensions
-             */
-
-            const originalViewport =
-                page.getViewport({
-                    scale: 1
-                });
-
-
-            /*
-             * Available screen size
-             */
-
-            const availableWidth =
-                viewer.clientWidth - 20;
-
-            const availableHeight =
-                viewer.clientHeight - 20;
-
-
-            /*
-             * Calculate scale required
-             * to fit width.
-             */
-
-            const widthScale =
-                availableWidth /
-                originalViewport.width;
-
-
-            /*
-             * Calculate scale required
-             * to fit height.
-             */
-
-            const heightScale =
-                availableHeight /
-                originalViewport.height;
-
-
-            /*
-             * Use the smaller value.
-             *
-             * This guarantees that the
-             * COMPLETE PDF page is visible.
-             */
-
-            const scale =
-                Math.min(
-                    widthScale,
-                    heightScale
+            const viewRect =
+                viewport.convertToViewportRectangle(
+                    rect
                 );
 
 
-            const viewport =
-                page.getViewport({
-                    scale: scale
-                });
+            const left =
+                Math.min(
+                    viewRect[0],
+                    viewRect[2]
+                );
+
+            const top =
+                Math.min(
+                    viewRect[1],
+                    viewRect[3]
+                );
+
+            const width =
+                Math.abs(
+                    viewRect[2] -
+                    viewRect[0]
+                );
+
+            const height =
+                Math.abs(
+                    viewRect[3] -
+                    viewRect[1]
+                );
 
 
             /*
-             * Configure container
+             * Create clickable link
              */
 
-            container.style.width =
-                viewport.width + "px";
+            const link =
+                document.createElement("a");
 
-            container.style.height =
-                viewport.height + "px";
+
+            link.style.left =
+                left + "px";
+
+            link.style.top =
+                top + "px";
+
+            link.style.width =
+                width + "px";
+
+            link.style.height =
+                height + "px";
 
 
             /*
-             * Configure canvas
+             * External URL
              */
 
-            canvas.width =
-                viewport.width;
+            if (annotation.url) {
 
-            canvas.height =
-                viewport.height;
+                link.href =
+                    annotation.url;
 
-            canvas.style.width =
-                viewport.width + "px";
+                link.target =
+                    "_blank";
 
-            canvas.style.height =
-                viewport.height + "px";
-
-
-            /*
-             * Render PDF
-             */
-
-            await page.render({
-                canvasContext: ctx,
-                viewport: viewport
-            }).promise;
-
-
-            /*
-             * ======================================
-             * RENDER PDF LINK ANNOTATIONS
-             * ======================================
-             */
-
-            const annotations =
-                await page.getAnnotations();
-
-
-            annotationLayer.innerHTML = "";
-
-            annotationLayer.style.width =
-                viewport.width + "px";
-
-            annotationLayer.style.height =
-                viewport.height + "px";
-
-
-            for (const annotation of annotations) {
-
-                /*
-                 * Only process link annotations
-                 */
-
-                if (
-                    annotation.subtype !== "Link"
-                ) {
-                    continue;
-                }
-
-
-                /*
-                 * PDF coordinates
-                 */
-
-                const rect =
-                    annotation.rect;
-
-
-                /*
-                 * Convert PDF coordinates
-                 * to screen coordinates
-                 */
-
-                const viewRect =
-                    viewport.convertToViewportRectangle(
-                        rect
-                    );
-
-
-                const x =
-                    Math.min(
-                        viewRect[0],
-                        viewRect[2]
-                    );
-
-                const y =
-                    Math.min(
-                        viewRect[1],
-                        viewRect[3]
-                    );
-
-                const width =
-                    Math.abs(
-                        viewRect[2] -
-                        viewRect[0]
-                    );
-
-                const height =
-                    Math.abs(
-                        viewRect[3] -
-                        viewRect[1]
-                    );
-
-
-                /*
-                 * Create clickable HTML link
-                 */
-
-                const link =
-                    document.createElement("a");
-
-
-                link.style.left =
-                    x + "px";
-
-                link.style.top =
-                    y + "px";
-
-                link.style.width =
-                    width + "px";
-
-                link.style.height =
-                    height + "px";
-
-
-                /*
-                 * External URL
-                 */
-
-                if (annotation.url) {
-
-                    link.href =
-                        annotation.url;
-
-                    link.target =
-                        "_blank";
-
-                    link.rel =
-                        "noopener noreferrer";
-                }
-
-
-                /*
-                 * Named / internal PDF links
-                 */
-
-                else if (
-                    annotation.dest
-                ) {
-
-                    link.href = "#";
-
-                    link.addEventListener(
-                        "click",
-                        async function (event) {
-
-                            event.preventDefault();
-
-                            console.log(
-                                "Internal PDF link:",
-                                annotation.dest
-                            );
-
-                        }
-                    );
-                }
-
-
-                annotationLayer.appendChild(link);
+                link.rel =
+                    "noopener noreferrer";
             }
 
-        }
-        catch (error) {
 
-            console.error(
-                "PDF loading error:",
-                error
-            );
+            /*
+             * Internal PDF destination
+             */
 
-            document.body.innerHTML =
-                "<h2 style='color:white;text-align:center'>" +
-                "Unable to load PDF" +
-                "</h2>";
+            else if (annotation.dest) {
+
+                link.href = "#";
+
+                link.addEventListener(
+                    "click",
+                    async function(event) {
+
+                        event.preventDefault();
+
+                        console.log(
+                            "Internal PDF destination:",
+                            annotation.dest
+                        );
+
+                    }
+                );
+            }
+
+
+            annotationLayer
+                .appendChild(link);
         }
     }
 
 
     /*
-     * Initial render
+     * ==========================================
+     * RESIZE HANDLING
+     * ==========================================
      */
 
-    renderPDF();
+    let resizeTimer = null;
 
-
-    /*
-     * Recalculate PDF size when
-     * device orientation / window size changes.
-     */
-
-    let resizeTimer;
 
     window.addEventListener(
         "resize",
-        function () {
+        function() {
 
-            clearTimeout(resizeTimer);
-
-            resizeTimer = setTimeout(
-                renderPDF,
-                200
+            clearTimeout(
+                resizeTimer
             );
+
+            resizeTimer =
+                setTimeout(
+                    renderPage,
+                    200
+                );
         }
     );
+
+
+    /*
+     * ==========================================
+     * START
+     * ==========================================
+     */
+
+    loadPDF();
 
 </script>
 
